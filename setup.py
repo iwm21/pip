@@ -6,6 +6,7 @@ import sys
 from setuptools import setup, find_packages
 from setuptools.command.test import test as TestCommand
 
+
 here = os.path.abspath(os.path.dirname(__file__))
 
 
@@ -40,7 +41,9 @@ def find_version(*file_paths):
 
 long_description = read('README.rst')
 
-tests_require = ['pytest', 'virtualenv>=1.10', 'scripttest>=1.3', 'mock']
+tests_require = ['pytest', 'virtualenv>=1.10', 'scripttest>=1.3', 'mock',
+                 'pretend']
+
 
 setup(
     name="pip",
@@ -56,9 +59,9 @@ setup(
         "Programming Language :: Python :: 2.6",
         "Programming Language :: Python :: 2.7",
         "Programming Language :: Python :: 3",
-        "Programming Language :: Python :: 3.2",
         "Programming Language :: Python :: 3.3",
         "Programming Language :: Python :: 3.4",
+        "Programming Language :: Python :: 3.5",
         "Programming Language :: Python :: Implementation :: PyPy"
     ],
     keywords='easy_install distutils setuptools egg virtualenv',
@@ -68,9 +71,10 @@ setup(
     license='MIT',
     packages=find_packages(exclude=["contrib", "docs", "tests*", "tasks"]),
     package_data={
-        'pip._vendor.requests': ['*.pem'],
-        'pip._vendor.distlib._backport': ['sysconfig.cfg'],
-        'pip._vendor.distlib': ['t32.exe', 't64.exe', 'w32.exe', 'w64.exe'],
+        "pip._vendor.certifi": ["*.pem"],
+        "pip._vendor.requests": ["*.pem"],
+        "pip._vendor.distlib._backport": ["sysconfig.cfg"],
+        "pip._vendor.distlib": ["t32.exe", "t64.exe", "w32.exe", "w64.exe"],
     },
     entry_points={
         "console_scripts": [

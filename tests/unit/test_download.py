@@ -16,6 +16,7 @@ from pip.download import (
     unpack_file_url,
 )
 from pip.index import Link
+from pip.utils.hashes import Hashes
 
 
 def test_unpack_http_url_with_urllib_response_without_content_type(data):
@@ -105,6 +106,7 @@ def test_unpack_http_url_bad_downloaded_checksum(mock_unpack_file):
             'location',
             download_dir=download_dir,
             session=session,
+            hashes=Hashes({'sha1': [download_hash.hexdigest()]})
         )
 
         # despite existence of downloaded file with bad hash, downloaded again
@@ -135,15 +137,26 @@ def test_url_to_path_unix():
 
 @pytest.mark.skipif("sys.platform != 'win32'")
 def test_path_to_url_win():
-    assert path_to_url('c:/tmp/file') == 'file:///c:/tmp/file'
-    assert path_to_url('c:\\tmp\\file') == 'file:///c:/tmp/file'
+    assert path_to_url('c:/tmp/file') == 'file:///C:/tmp/file'
+    assert path_to_url('c:\\tmp\\file') == 'file:///C:/tmp/file'
+    assert path_to_url(r'\\unc\as\path') == 'file://unc/as/path'
     path = os.path.join(os.getcwd(), 'file')
     assert path_to_url('file') == 'file:' + urllib_request.pathname2url(path)
 
 
 @pytest.mark.skipif("sys.platform != 'win32'")
 def test_url_to_path_win():
-    assert url_to_path('file:///c:/tmp/file') == 'c:/tmp/file'
+    assert url_to_path('file:///c:/tmp/file') == 'C:\\tmp\\file'
+    assert url_to_path('file://unc/as/path') == r'\\unc\as\path'
+
+
+@pytest.mark.skipif("sys.platform != 'win32'")
+def test_url_to_path_path_to_url_symmetry_win():
+    path = r'C:\tmp\file'
+    assert url_to_path(path_to_url(path)) == path
+
+    unc_path = r'\\unc\share\path'
+    assert url_to_path(path_to_url(unc_path)) == unc_path
 
 
 class Test_unpack_file_url(object):
@@ -198,7 +211,9 @@ class Test_unpack_file_url(object):
         self.prep(tmpdir, data)
         self.dist_url.url = "%s#md5=bogus" % self.dist_url.url
         with pytest.raises(HashMismatch):
-            unpack_file_url(self.dist_url, self.build_dir)
+            unpack_file_url(self.dist_url,
+                            self.build_dir,
+                            hashes=Hashes({'md5': ['bogus']}))
 
     def test_unpack_file_url_download_bad_hash(self, tmpdir, data,
                                                monkeypatch):
@@ -224,12 +239,12 @@ class Test_unpack_file_url(object):
             dist_path_md5
         )
         unpack_file_url(self.dist_url, self.build_dir,
-                        download_dir=self.download_dir)
+                        download_dir=self.download_dir,
+                        hashes=Hashes({'md5': [dist_path_md5]}))
 
         # confirm hash is for simple1-1.0
         # the previous bad download has been removed
-        assert (hashlib.md5(open(dest_file, 'rb').read()).hexdigest()
-                ==
+        assert (hashlib.md5(open(dest_file, 'rb').read()).hexdigest() ==
                 dist_path_md5
                 ), hashlib.md5(open(dest_file, 'rb').read()).hexdigest()
 
@@ -243,6 +258,11 @@ class Test_unpack_file_url(object):
 
 
 class TestSafeFileCache:
+    """
+    The no_perms test are useless on Windows since SafeFileCache uses
+    pip.utils.filesystem.check_path_owner which is based on os.geteuid
+    which is absent on Windows.
+    """
 
     def test_cache_roundtrip(self, tmpdir):
         cache_dir = tmpdir.join("test-cache")
@@ -255,6 +275,7 @@ class TestSafeFileCache:
         cache.delete("test key")
         assert cache.get("test key") is None
 
+    @pytest.mark.skipif("sys.platform == 'win32'")
     def test_safe_get_no_perms(self, tmpdir, monkeypatch):
         cache_dir = tmpdir.join("unreadable-cache")
         cache_dir.makedirs()
@@ -265,14 +286,16 @@ class TestSafeFileCache:
         cache = SafeFileCache(cache_dir)
         cache.get("foo")
 
+    @pytest.mark.skipif("sys.platform == 'win32'")
     def test_safe_set_no_perms(self, tmpdir):
         cache_dir = tmpdir.join("unreadable-cache")
         cache_dir.makedirs()
         os.chmod(cache_dir, 000)
 
         cache = SafeFileCache(cache_dir)
-        cache.set("foo", "bar")
+        cache.set("foo", b"bar")
 
+    @pytest.mark.skipif("sys.platform == 'win32'")
     def test_safe_delete_no_perms(self, tmpdir):
         cache_dir = tmpdir.join("unreadable-cache")
         cache_dir.makedirs()
@@ -293,10 +316,20 @@ class TestPipSession:
     def test_cache_is_enabled(self, tmpdir):
         session = PipSession(cache=tmpdir.join("test-cache"))
 
-        assert hasattr(session.adapters["http://"], "cache")
         assert hasattr(session.adapters["https://"], "cache")
 
-        assert (session.adapters["http://"].cache.directory
-                == tmpdir.join("test-cache"))
-        assert (session.adapters["https://"].cache.directory
-                == tmpdir.join("test-cache"))
+        assert (session.adapters["https://"].cache.directory ==
+                tmpdir.join("test-cache"))
+
+    def test_http_cache_is_not_enabled(self, tmpdir):
+        session = PipSession(cache=tmpdir.join("test-cache"))
+
+        assert not hasattr(session.adapters["http://"], "cache")
+
+    def test_insecure_host_cache_is_not_enabled(self, tmpdir):
+        session = PipSession(
+            cache=tmpdir.join("test-cache"),
+            insecure_hosts=["example.com"],
+        )
+
+        assert not hasattr(session.adapters["https://example.com/"], "cache")

@@ -1,3 +1,5 @@
+# -*- coding: utf-8 -*-
+
 """
 util tests
 
@@ -5,16 +7,20 @@ util tests
 import os
 import stat
 import sys
+import time
 import shutil
 import tempfile
 
 import pytest
 
 from mock import Mock, patch
-from pip.exceptions import BadCommand
-from pip.utils import (egg_link_path, Inf, get_installed_distributions,
-                       find_command, untar_file, unzip_file)
-from pip.commands.freeze import freeze_excludes
+from pip.exceptions import HashMismatch, HashMissing, InstallationError
+from pip.utils import (egg_link_path, get_installed_distributions,
+                       untar_file, unzip_file, rmtree, normalize_path)
+from pip.utils.build import BuildDirectory
+from pip.utils.encoding import auto_decode
+from pip.utils.hashes import Hashes, MissingHashes
+from pip._vendor.six import BytesIO
 
 
 class Tests_EgglinkPath:
@@ -151,16 +157,7 @@ class Tests_EgglinkPath:
         assert egg_link_path(self.mock_dist) is None
 
 
-def test_Inf_greater():
-    """Test Inf compares greater."""
-    assert Inf > object()
-
-
-def test_Inf_equals_Inf():
-    """Test Inf compares greater."""
-    assert Inf == Inf
-
-
+@patch('pip.utils.dist_in_usersite')
 @patch('pip.utils.dist_is_local')
 @patch('pip.utils.dist_is_editable')
 class Tests_get_installed_distributions:
@@ -170,6 +167,7 @@ class Tests_get_installed_distributions:
         Mock(test_name="global"),
         Mock(test_name="editable"),
         Mock(test_name="normal"),
+        Mock(test_name="user"),
     ]
 
     workingset_stdlib = [
@@ -187,37 +185,63 @@ class Tests_get_installed_distributions:
         return dist.test_name == "editable"
 
     def dist_is_local(self, dist):
-        return dist.test_name != "global"
+        return dist.test_name != "global" and dist.test_name != 'user'
+
+    def dist_in_usersite(self, dist):
+        return dist.test_name == "user"
 
     @patch('pip._vendor.pkg_resources.working_set', workingset)
-    def test_editables_only(self, mock_dist_is_editable, mock_dist_is_local):
+    def test_editables_only(self, mock_dist_is_editable,
+                            mock_dist_is_local,
+                            mock_dist_in_usersite):
         mock_dist_is_editable.side_effect = self.dist_is_editable
         mock_dist_is_local.side_effect = self.dist_is_local
+        mock_dist_in_usersite.side_effect = self.dist_in_usersite
         dists = get_installed_distributions(editables_only=True)
         assert len(dists) == 1, dists
         assert dists[0].test_name == "editable"
 
     @patch('pip._vendor.pkg_resources.working_set', workingset)
-    def test_exclude_editables(
-            self, mock_dist_is_editable, mock_dist_is_local):
+    def test_exclude_editables(self, mock_dist_is_editable,
+                               mock_dist_is_local,
+                               mock_dist_in_usersite):
         mock_dist_is_editable.side_effect = self.dist_is_editable
         mock_dist_is_local.side_effect = self.dist_is_local
+        mock_dist_in_usersite.side_effect = self.dist_in_usersite
         dists = get_installed_distributions(include_editables=False)
         assert len(dists) == 1
         assert dists[0].test_name == "normal"
 
     @patch('pip._vendor.pkg_resources.working_set', workingset)
-    def test_include_globals(self, mock_dist_is_editable, mock_dist_is_local):
+    def test_include_globals(self, mock_dist_is_editable,
+                             mock_dist_is_local,
+                             mock_dist_in_usersite):
         mock_dist_is_editable.side_effect = self.dist_is_editable
         mock_dist_is_local.side_effect = self.dist_is_local
+        mock_dist_in_usersite.side_effect = self.dist_in_usersite
         dists = get_installed_distributions(local_only=False)
-        assert len(dists) == 3
+        assert len(dists) == 4
+
+    @patch('pip._vendor.pkg_resources.working_set', workingset)
+    def test_user_only(self, mock_dist_is_editable,
+                       mock_dist_is_local,
+                       mock_dist_in_usersite):
+        mock_dist_is_editable.side_effect = self.dist_is_editable
+        mock_dist_is_local.side_effect = self.dist_is_local
+        mock_dist_in_usersite.side_effect = self.dist_in_usersite
+        dists = get_installed_distributions(local_only=False,
+                                            user_only=True)
+        assert len(dists) == 1
+        assert dists[0].test_name == "user"
 
     @pytest.mark.skipif("sys.version_info >= (2,7)")
     @patch('pip._vendor.pkg_resources.working_set', workingset_stdlib)
-    def test_py26_excludes(self, mock_dist_is_editable, mock_dist_is_local):
+    def test_py26_excludes(self, mock_dist_is_editable,
+                           mock_dist_is_local,
+                           mock_dist_in_usersite):
         mock_dist_is_editable.side_effect = self.dist_is_editable
         mock_dist_is_local.side_effect = self.dist_is_local
+        mock_dist_in_usersite.side_effect = self.dist_in_usersite
         dists = get_installed_distributions()
         assert len(dists) == 1
         assert dists[0].key == 'argparse'
@@ -225,107 +249,24 @@ class Tests_get_installed_distributions:
     @pytest.mark.skipif("sys.version_info < (2,7)")
     @patch('pip._vendor.pkg_resources.working_set', workingset_stdlib)
     def test_gte_py27_excludes(self, mock_dist_is_editable,
-                               mock_dist_is_local):
+                               mock_dist_is_local,
+                               mock_dist_in_usersite):
         mock_dist_is_editable.side_effect = self.dist_is_editable
         mock_dist_is_local.side_effect = self.dist_is_local
+        mock_dist_in_usersite.side_effect = self.dist_in_usersite
         dists = get_installed_distributions()
         assert len(dists) == 0
 
     @patch('pip._vendor.pkg_resources.working_set', workingset_freeze)
-    def test_freeze_excludes(self, mock_dist_is_editable, mock_dist_is_local):
+    def test_freeze_excludes(self, mock_dist_is_editable,
+                             mock_dist_is_local,
+                             mock_dist_in_usersite):
         mock_dist_is_editable.side_effect = self.dist_is_editable
         mock_dist_is_local.side_effect = self.dist_is_local
-        dists = get_installed_distributions(skip=freeze_excludes)
+        mock_dist_in_usersite.side_effect = self.dist_in_usersite
+        dists = get_installed_distributions(
+            skip=('setuptools', 'pip', 'distribute'))
         assert len(dists) == 0
-
-
-def test_find_command_folder_in_path(tmpdir):
-    """
-    If a folder named e.g. 'git' is in PATH, and find_command is looking for
-    the 'git' executable, it should not match the folder, but rather keep
-    looking.
-    """
-    tmpdir.join("path_one").mkdir()
-    path_one = tmpdir / 'path_one'
-    path_one.join("foo").mkdir()
-    tmpdir.join("path_two").mkdir()
-    path_two = tmpdir / 'path_two'
-    path_two.join("foo").write("# nothing")
-    found_path = find_command('foo', map(str, [path_one, path_two]))
-    assert found_path == path_two / 'foo'
-
-
-def test_does_not_find_command_because_there_is_no_path():
-    """
-    Test calling `pip.utils.find_command` when there is no PATH env variable
-    """
-    environ_before = os.environ
-    os.environ = {}
-    try:
-        try:
-            find_command('anycommand')
-        except BadCommand:
-            e = sys.exc_info()[1]
-            assert e.args == ("Cannot find command 'anycommand'",)
-        else:
-            raise AssertionError("`find_command` should raise `BadCommand`")
-    finally:
-        os.environ = environ_before
-
-
-@patch('os.pathsep', ':')
-@patch('pip.utils.get_pathext')
-@patch('os.path.isfile')
-def test_find_command_trys_all_pathext(mock_isfile, getpath_mock):
-    """
-    If no pathext should check default list of extensions, if file does not
-    exist.
-    """
-    mock_isfile.return_value = False
-
-    getpath_mock.return_value = os.pathsep.join([".COM", ".EXE"])
-
-    paths = [
-        os.path.join('path_one', f) for f in ['foo.com', 'foo.exe', 'foo']
-    ]
-    expected = [((p,),) for p in paths]
-
-    with pytest.raises(BadCommand):
-        find_command("foo", "path_one")
-
-    assert (
-        mock_isfile.call_args_list == expected, "Actual: %s\nExpected %s" %
-        (mock_isfile.call_args_list, expected)
-    )
-    assert getpath_mock.called, "Should call get_pathext"
-
-
-@patch('os.pathsep', ':')
-@patch('pip.utils.get_pathext')
-@patch('os.path.isfile')
-def test_find_command_trys_supplied_pathext(mock_isfile, getpath_mock):
-    """
-    If pathext supplied find_command should use all of its list of extensions
-    to find file.
-    """
-    mock_isfile.return_value = False
-    getpath_mock.return_value = ".FOO"
-
-    pathext = os.pathsep.join([".RUN", ".CMD"])
-
-    paths = [
-        os.path.join('path_one', f) for f in ['foo.run', 'foo.cmd', 'foo']
-    ]
-    expected = [((p,),) for p in paths]
-
-    with pytest.raises(BadCommand):
-        find_command("foo", "path_one", pathext)
-
-    assert (
-        mock_isfile.call_args_list == expected, "Actual: %s\nExpected %s" %
-        (mock_isfile.call_args_list, expected)
-    )
-    assert not getpath_mock.called, "Should not call get_pathext"
 
 
 class TestUnpackArchives(object):
@@ -390,6 +331,10 @@ class TestUnpackArchives(object):
         test_file = data.packages.join("test_tar.tgz")
         untar_file(test_file, self.tempdir)
         self.confirm_files()
+        # Check the timestamp of an extracted file
+        file_txt_path = os.path.join(self.tempdir, 'file.txt')
+        mtime = time.gmtime(os.stat(file_txt_path).st_mtime)
+        assert mtime[0:6] == (2013, 8, 16, 5, 13, 37), mtime
 
     def test_unpack_zip(self, data):
         """
@@ -398,3 +343,148 @@ class TestUnpackArchives(object):
         test_file = data.packages.join("test_zip.zip")
         unzip_file(test_file, self.tempdir)
         self.confirm_files()
+
+
+class Failer:
+    def __init__(self, duration=1):
+        self.succeed_after = time.time() + duration
+
+    def call(self, *args, **kw):
+        """Fail with OSError self.max_fails times"""
+        if time.time() < self.succeed_after:
+            raise OSError("Failed")
+
+
+def test_rmtree_retries(tmpdir, monkeypatch):
+    """
+    Test pip.utils.rmtree will retry failures
+    """
+    monkeypatch.setattr(shutil, 'rmtree', Failer(duration=1).call)
+    rmtree('foo')
+
+
+def test_rmtree_retries_for_3sec(tmpdir, monkeypatch):
+    """
+    Test pip.utils.rmtree will retry failures for no more than 3 sec
+    """
+    monkeypatch.setattr(shutil, 'rmtree', Failer(duration=5).call)
+    with pytest.raises(OSError):
+        rmtree('foo')
+
+
+class Test_normalize_path(object):
+    # Technically, symlinks are possible on Windows, but you need a special
+    # permission bit to create them, and Python 2 doesn't support it anyway, so
+    # it's easiest just to skip this test on Windows altogether.
+    @pytest.mark.skipif("sys.platform == 'win32'")
+    def test_resolve_symlinks(self, tmpdir):
+        print(type(tmpdir))
+        print(dir(tmpdir))
+        orig_working_dir = os.getcwd()
+        os.chdir(tmpdir)
+        try:
+            d = os.path.join('foo', 'bar')
+            f = os.path.join(d, 'file1')
+            os.makedirs(d)
+            with open(f, 'w'):  # Create the file
+                pass
+
+            os.symlink(d, 'dir_link')
+            os.symlink(f, 'file_link')
+
+            assert normalize_path(
+                'dir_link/file1', resolve_symlinks=True
+            ) == os.path.join(tmpdir, f)
+            assert normalize_path(
+                'dir_link/file1', resolve_symlinks=False
+            ) == os.path.join(tmpdir, 'dir_link', 'file1')
+
+            assert normalize_path(
+                'file_link', resolve_symlinks=True
+            ) == os.path.join(tmpdir, f)
+            assert normalize_path(
+                'file_link', resolve_symlinks=False
+            ) == os.path.join(tmpdir, 'file_link')
+        finally:
+            os.chdir(orig_working_dir)
+
+
+class TestHashes(object):
+    """Tests for pip.utils.hashes"""
+
+    def test_success(self, tmpdir):
+        """Make sure no error is raised when at least one hash matches.
+
+        Test check_against_path because it calls everything else.
+
+        """
+        file = tmpdir / 'to_hash'
+        file.write('hello')
+        hashes = Hashes({
+            'sha256': ['2cf24dba5fb0a30e26e83b2ac5b9e29e'
+                       '1b161e5c1fa7425e73043362938b9824'],
+            'sha224': ['wrongwrong'],
+            'md5': ['5d41402abc4b2a76b9719d911017c592']})
+        hashes.check_against_path(file)
+
+    def test_failure(self):
+        """Hashes should raise HashMismatch when no hashes match."""
+        hashes = Hashes({'sha256': ['wrongwrong']})
+        with pytest.raises(HashMismatch):
+            hashes.check_against_file(BytesIO(b'hello'))
+
+    def test_missing_hashes(self):
+        """MissingHashes should raise HashMissing when any check is done."""
+        with pytest.raises(HashMissing):
+            MissingHashes().check_against_file(BytesIO(b'hello'))
+
+    def test_unknown_hash(self):
+        """Hashes should raise InstallationError when it encounters an unknown
+        hash."""
+        hashes = Hashes({'badbad': ['dummy']})
+        with pytest.raises(InstallationError):
+            hashes.check_against_file(BytesIO(b'hello'))
+
+    def test_non_zero(self):
+        """Test that truthiness tests tell whether any known-good hashes
+        exist."""
+        assert Hashes({'sha256': 'dummy'})
+        assert not Hashes()
+        assert not Hashes({})
+
+
+class TestEncoding(object):
+    """Tests for pip.utils.encoding"""
+
+    def test_auto_decode_utf16_le(self):
+        data = (
+            b'\xff\xfeD\x00j\x00a\x00n\x00g\x00o\x00=\x00'
+            b'=\x001\x00.\x004\x00.\x002\x00'
+        )
+        assert auto_decode(data) == "Django==1.4.2"
+
+    def test_auto_decode_no_bom(self):
+        assert auto_decode(b'foobar') == u'foobar'
+
+    def test_auto_decode_pep263_headers(self):
+        latin1_req = u'# coding=latin1\n# Pas trop de café'
+        assert auto_decode(latin1_req.encode('latin1')) == latin1_req
+
+
+class TestBuildDirectory(object):
+    # No need to test symlinked directories on Windows
+    @pytest.mark.skipif("sys.platform == 'win32'")
+    def test_build_directory(self):
+        with BuildDirectory() as build_dir:
+            tmp_dir = tempfile.mkdtemp(prefix="pip-build-test")
+            assert (
+                os.path.dirname(build_dir) ==
+                os.path.dirname(os.path.realpath(tmp_dir))
+            )
+            # are we on a system where /tmp is a symlink
+            if os.path.realpath(tmp_dir) != os.path.abspath(tmp_dir):
+                assert os.path.dirname(build_dir) != os.path.dirname(tmp_dir)
+            else:
+                assert os.path.dirname(build_dir) == os.path.dirname(tmp_dir)
+            os.rmdir(tmp_dir)
+            assert not os.path.exists(tmp_dir)

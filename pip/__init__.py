@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 from __future__ import absolute_import
 
+import locale
 import logging
 import os
 import optparse
@@ -11,10 +12,17 @@ import re
 
 from pip.exceptions import InstallationError, CommandError, PipError
 from pip.utils import get_installed_distributions, get_prog
-from pip.utils import deprecation
+from pip.utils import deprecation, dist_is_editable
 from pip.vcs import git, mercurial, subversion, bazaar  # noqa
 from pip.baseparser import ConfigOptionParser, UpdatingDefaultsHelpFormatter
-from pip.commands import commands, get_summaries, get_similar_commands
+from pip.commands import get_summaries, get_similar_commands
+from pip.commands import commands_dict
+from pip._vendor.requests.packages.urllib3.exceptions import (
+    InsecureRequestWarning,
+)
+
+
+# assignment for flake8 to be happy
 
 # This fixes a peculiarity when importing via __import__ - as we are
 # initialising the pip module, "from pip import cmdoptions" is recursive
@@ -23,10 +31,13 @@ import pip.cmdoptions
 cmdoptions = pip.cmdoptions
 
 # The version as used in the setup.py and the docs conf.py
-__version__ = "1.6.dev1"
+__version__ = "8.2.0.dev0"
 
 
 logger = logging.getLogger(__name__)
+
+# Hide the InsecureRequestWArning from urllib3
+warnings.filterwarnings("ignore", category=InsecureRequestWarning)
 
 
 def autocomplete():
@@ -72,7 +83,7 @@ def autocomplete():
                     print(dist)
                 sys.exit(1)
 
-        subcommand = commands[subcommand_name]()
+        subcommand = commands_dict[subcommand_name]()
         options += [(opt.get_opt_string(), opt.nargs)
                     for opt in subcommand.parser.option_list_all
                     if opt.help != optparse.SUPPRESS_HELP]
@@ -158,7 +169,7 @@ def parseopts(args):
     # the subcommand name
     cmd_name = args_else[0]
 
-    if cmd_name not in commands:
+    if cmd_name not in commands_dict:
         guess = get_similar_commands(cmd_name)
 
         msg = ['unknown command "%s"' % cmd_name]
@@ -174,13 +185,18 @@ def parseopts(args):
     return cmd_name, cmd_args
 
 
+def check_isolated(args):
+    isolated = False
+
+    if "--isolated" in args:
+        isolated = True
+
+    return isolated
+
+
 def main(args=None):
     if args is None:
         args = sys.argv[1:]
-
-    # Enable our Deprecation Warnings
-    for deprecation_warning in deprecation.DEPRECATIONS:
-        warnings.simplefilter("default", deprecation_warning)
 
     # Configure our deprecation warnings to be sent through loggers
     deprecation.install_warning_logger()
@@ -194,7 +210,14 @@ def main(args=None):
         sys.stderr.write(os.linesep)
         sys.exit(1)
 
-    command = commands[cmd_name]()
+    # Needed for locale.getpreferredencoding(False) to work
+    # in pip.utils.encoding.auto_decode
+    try:
+        locale.setlocale(locale.LC_ALL, '')
+    except locale.Error as e:
+        # setlocale can apparently crash if locale are uninitialized
+        logger.debug("Ignoring error %s when setting locale", e)
+    command = commands_dict[cmd_name](isolated=check_isolated(cmd_args))
     return command.main(cmd_args)
 
 
@@ -213,14 +236,14 @@ class FrozenRequirement(object):
     _date_re = re.compile(r'-(20\d\d\d\d\d\d)$')
 
     @classmethod
-    def from_dist(cls, dist, dependency_links, find_tags=False):
+    def from_dist(cls, dist, dependency_links):
         location = os.path.normcase(os.path.abspath(dist.location))
         comments = []
         from pip.vcs import vcs, get_src_requirement
-        if vcs.get_backend_name(location):
+        if dist_is_editable(dist) and vcs.get_backend_name(location):
             editable = True
             try:
-                req = get_src_requirement(dist, location, find_tags)
+                req = get_src_requirement(dist, location)
             except InstallationError as exc:
                 logger.warning(
                     "Error when trying to get requirement for VCS system %s, "
@@ -240,7 +263,9 @@ class FrozenRequirement(object):
             editable = False
             req = dist.as_requirement()
             specs = req.specs
-            assert len(specs) == 1 and specs[0][0] == '=='
+            assert len(specs) == 1 and specs[0][0] in ["==", "==="], \
+                'Expected 1 spec with == or ===; specs = %r; dist = %r' % \
+                (specs, dist)
             version = specs[0][1]
             ver_match = cls._rev_re.search(version)
             date_match = cls._date_re.search(version)

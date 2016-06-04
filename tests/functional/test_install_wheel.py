@@ -1,4 +1,5 @@
 import os
+import sys
 import pytest
 import glob
 
@@ -17,7 +18,10 @@ def test_install_from_future_wheel_version(script, data):
                                 editable=False)
 
     package = data.packages.join("futurewheel-1.9-py2.py3-none-any.whl")
-    result = script.pip('install', package, '--no-index', expect_error=False)
+    result = script.pip(
+        'install', package, '--no-index', expect_error=False,
+        expect_stderr=True,
+    )
     result.assert_installed('futurewheel', without_egg_link=True,
                             editable=False)
 
@@ -38,7 +42,7 @@ def test_install_from_wheel(script, data):
     Test installing from a wheel (that has a script)
     """
     result = script.pip(
-        'install', 'has.script==1.0', '--use-wheel', '--no-index',
+        'install', 'has.script==1.0', '--no-index',
         '--find-links=' + data.find_links,
         expect_error=False,
     )
@@ -55,7 +59,7 @@ def test_install_from_wheel_with_extras(script, data):
     Test installing from a wheel with extras.
     """
     result = script.pip(
-        'install', 'complex-dist[simple]', '--use-wheel', '--no-index',
+        'install', 'complex-dist[simple]', '--no-index',
         '--find-links=' + data.find_links,
         expect_error=False,
     )
@@ -79,6 +83,17 @@ def test_install_from_wheel_file(script, data):
     assert dist_info_folder in result.files_created, (dist_info_folder,
                                                       result.files_created,
                                                       result.stdout)
+    installer = dist_info_folder / 'INSTALLER'
+    assert installer in result.files_created, (dist_info_folder,
+                                               result.files_created,
+                                               result.stdout)
+    with open(script.base_path / installer, 'rb') as installer_file:
+        installer_details = installer_file.read()
+        assert installer_details == b'pip\n'
+    installer_temp = dist_info_folder / 'INSTALLER.pip'
+    assert installer_temp not in result.files_created, (dist_info_folder,
+                                                        result.files_created,
+                                                        result.stdout)
 
 
 # header installs are broke in pypy virtualenvs
@@ -96,6 +111,7 @@ def test_install_from_wheel_with_headers(script, data):
                                                       result.stdout)
 
 
+@pytest.mark.network
 def test_install_wheel_with_target(script, data):
     """
     Test installing a wheel using pip install --target
@@ -103,7 +119,7 @@ def test_install_wheel_with_target(script, data):
     script.pip('install', 'wheel')
     target_dir = script.scratch_path / 'target'
     result = script.pip(
-        'install', 'simple.dist==0.1', '-t', target_dir, '--use-wheel',
+        'install', 'simple.dist==0.1', '-t', target_dir,
         '--no-index', '--find-links=' + data.find_links,
     )
     assert Path('scratch') / 'target' / 'simpledist' in result.files_created, (
@@ -117,10 +133,26 @@ def test_install_wheel_with_root(script, data):
     """
     root_dir = script.scratch_path / 'root'
     result = script.pip(
-        'install', 'simple.dist==0.1', '--root', root_dir, '--use-wheel',
+        'install', 'simple.dist==0.1', '--root', root_dir,
         '--no-index', '--find-links=' + data.find_links,
     )
     assert Path('scratch') / 'root' in result.files_created
+
+
+def test_install_wheel_with_prefix(script, data):
+    """
+    Test installing a wheel using pip install --prefix
+    """
+    prefix_dir = script.scratch_path / 'prefix'
+    result = script.pip(
+        'install', 'simple.dist==0.1', '--prefix', prefix_dir,
+        '--no-index', '--find-links=' + data.find_links,
+    )
+    if hasattr(sys, "pypy_version_info"):
+        lib = Path('scratch') / 'prefix' / 'site-packages'
+    else:
+        lib = Path('scratch') / 'prefix' / 'lib'
+    assert lib in result.files_created
 
 
 def test_install_from_wheel_installs_deps(script, data):
@@ -149,6 +181,7 @@ def test_install_from_wheel_no_deps(script, data):
     assert pkg_folder not in result.files_created
 
 
+@pytest.mark.network
 def test_install_user_wheel(script, virtualenv, data):
     """
     Test user install from wheel (that has a script)
@@ -156,7 +189,7 @@ def test_install_user_wheel(script, virtualenv, data):
     virtualenv.system_site_packages = True
     script.pip('install', 'wheel')
     result = script.pip(
-        'install', 'has.script==1.0', '--user', '--use-wheel', '--no-index',
+        'install', 'has.script==1.0', '--user', '--no-index',
         '--find-links=' + data.find_links,
     )
     egg_info_folder = script.user_site / 'has.script-1.0.dist-info'
@@ -170,7 +203,7 @@ def test_install_from_wheel_gen_entrypoint(script, data):
     Test installing scripts (entry points are generated)
     """
     result = script.pip(
-        'install', 'script.wheel1a==0.1', '--use-wheel', '--no-index',
+        'install', 'script.wheel1a==0.1', '--no-index',
         '--find-links=' + data.find_links,
         expect_error=False,
     )
@@ -184,12 +217,32 @@ def test_install_from_wheel_gen_entrypoint(script, data):
         assert bool(os.access(script.base_path / wrapper_file, os.X_OK))
 
 
+def test_install_from_wheel_gen_uppercase_entrypoint(script, data):
+    """
+    Test installing scripts with uppercase letters in entry point names
+    """
+    result = script.pip(
+        'install', 'console-scripts-uppercase==1.0', '--no-index',
+        '--find-links=' + data.find_links,
+        expect_error=False,
+    )
+    if os.name == 'nt':
+        # Case probably doesn't make any difference on NT
+        wrapper_file = script.bin / 'cmdName.exe'
+    else:
+        wrapper_file = script.bin / 'cmdName'
+    assert wrapper_file in result.files_created
+
+    if os.name != "nt":
+        assert bool(os.access(script.base_path / wrapper_file, os.X_OK))
+
+
 def test_install_from_wheel_with_legacy(script, data):
     """
     Test installing scripts (legacy scripts are preserved)
     """
     result = script.pip(
-        'install', 'script.wheel2a==0.1', '--use-wheel', '--no-index',
+        'install', 'script.wheel2a==0.1', '--no-index',
         '--find-links=' + data.find_links,
         expect_error=False,
     )
@@ -207,7 +260,7 @@ def test_install_from_wheel_no_setuptools_entrypoint(script, data):
     the wheel are skipped.
     """
     result = script.pip(
-        'install', 'script.wheel1==0.1', '--use-wheel', '--no-index',
+        'install', 'script.wheel1==0.1', '--no-index',
         '--find-links=' + data.find_links,
         expect_error=False,
     )
@@ -232,7 +285,7 @@ def test_skipping_setuptools_doesnt_skip_legacy(script, data):
     setuptools wrappers)
     """
     result = script.pip(
-        'install', 'script.wheel2==0.1', '--use-wheel', '--no-index',
+        'install', 'script.wheel2==0.1', '--no-index',
         '--find-links=' + data.find_links,
         expect_error=False,
     )
@@ -251,7 +304,7 @@ def test_install_from_wheel_gui_entrypoint(script, data):
     Test installing scripts (gui entry points are generated)
     """
     result = script.pip(
-        'install', 'script.wheel3==0.1', '--use-wheel', '--no-index',
+        'install', 'script.wheel3==0.1', '--no-index',
         '--find-links=' + data.find_links,
         expect_error=False,
     )
@@ -319,4 +372,5 @@ def test_install_from_wheel_uninstalls_old_version(script, data):
 def test_wheel_compile_syntax_error(script, data):
     package = data.packages.join("compilewheel-1.0-py2.py3-none-any.whl")
     result = script.pip('install', '--compile', package, '--no-index')
+    assert 'yield from' not in result.stdout
     assert 'SyntaxError: ' not in result.stdout

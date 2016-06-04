@@ -3,15 +3,19 @@ from __future__ import with_statement
 import textwrap
 import os
 import sys
+import pytest
+import pretend
+
 from os.path import join, normpath
 from tempfile import mkdtemp
-from mock import patch
 from tests.lib import assert_all_changes, pyversion
 from tests.lib.local_repos import local_repo, local_checkout
 
+from pip.req import InstallRequirement
 from pip.utils import rmtree
 
 
+@pytest.mark.network
 def test_simple_uninstall(script):
     """
     Test simple install and uninstall.
@@ -28,6 +32,29 @@ def test_simple_uninstall(script):
     assert_all_changes(result, result2, [script.venv / 'build', 'cache'])
 
 
+def test_simple_uninstall_distutils(script):
+    """
+    Test simple install and uninstall.
+
+    """
+    script.scratch_path.join("distutils_install").mkdir()
+    pkg_path = script.scratch_path / 'distutils_install'
+    pkg_path.join("setup.py").write(textwrap.dedent("""
+        from distutils.core import setup
+        setup(
+            name='distutils-install',
+            version='0.1',
+        )
+    """))
+    result = script.run('python', pkg_path / 'setup.py', 'install')
+    result = script.pip('list', '--format=legacy')
+    assert "distutils-install (0.1)" in result.stdout
+    script.pip('uninstall', 'distutils_install', '-y', expect_stderr=True)
+    result2 = script.pip('list', '--format=legacy')
+    assert "distutils-install (0.1)" not in result2.stdout
+
+
+@pytest.mark.network
 def test_uninstall_with_scripts(script):
     """
     Uninstall an easy_installed package with scripts.
@@ -45,6 +72,7 @@ def test_uninstall_with_scripts(script):
     )
 
 
+@pytest.mark.network
 def test_uninstall_easy_install_after_import(script):
     """
     Uninstall an easy_installed package after it's been imported
@@ -66,6 +94,7 @@ def test_uninstall_easy_install_after_import(script):
     )
 
 
+@pytest.mark.network
 def test_uninstall_namespace_package(script):
     """
     Uninstall a distribution with a namespace package without clobbering
@@ -125,6 +154,33 @@ def test_uninstall_overlapping_package(script, data):
     assert_all_changes(result2, result3, [])
 
 
+def test_uninstall_entry_point(script):
+    """
+    Test uninstall package with two or more entry points in the same section,
+    whose name contain a colon.
+    """
+    script.scratch_path.join("ep_install").mkdir()
+    pkg_path = script.scratch_path / 'ep_install'
+    pkg_path.join("setup.py").write(textwrap.dedent("""
+        from setuptools import setup
+        setup(
+            name='ep-install',
+            version='0.1',
+            entry_points={"pip_test.ep":
+                          ["ep:name1 = distutils_install",
+                           "ep:name2 = distutils_install"]
+                          }
+        )
+    """))
+    result = script.pip('install', pkg_path)
+    result = script.pip('list', '--format=legacy')
+    assert "ep-install (0.1)" in result.stdout
+    script.pip('uninstall', 'ep_install', '-y')
+    result2 = script.pip('list', '--format=legacy')
+    assert "ep-install (0.1)" not in result2.stdout
+
+
+@pytest.mark.network
 def test_uninstall_console_scripts(script):
     """
     Test uninstalling a package with more files (console_script entry points,
@@ -140,6 +196,7 @@ def test_uninstall_console_scripts(script):
     assert_all_changes(result, result2, [script.venv / 'build', 'cache'])
 
 
+@pytest.mark.network
 def test_uninstall_easy_installed_console_scripts(script):
     """
     Test uninstalling package with console_scripts that is easy_installed.
@@ -162,6 +219,7 @@ def test_uninstall_easy_installed_console_scripts(script):
     )
 
 
+@pytest.mark.network
 def test_uninstall_editable_from_svn(script, tmpdir):
     """
     Test uninstalling an editable installation from svn.
@@ -187,6 +245,7 @@ def test_uninstall_editable_from_svn(script, tmpdir):
     )
 
 
+@pytest.mark.network
 def test_uninstall_editable_with_source_outside_venv(script, tmpdir):
     """
     Test uninstalling editable install from existing source outside the venv.
@@ -230,6 +289,7 @@ def _test_uninstall_editable_with_source_outside_venv(
     )
 
 
+@pytest.mark.network
 def test_uninstall_from_reqs_file(script, tmpdir):
     """
     Test uninstall from a requirements file.
@@ -283,11 +343,11 @@ def test_uninstall_as_egg(script, data):
     to_install = data.packages.join("FSPkg")
     result = script.pip('install', to_install, '--egg', expect_error=False)
     fspkg_folder = script.site_packages / 'fspkg'
-    egg_folder = script.site_packages / 'FSPkg-0.1dev-py%s.egg' % pyversion
+    egg_folder = script.site_packages / 'FSPkg-0.1.dev0-py%s.egg' % pyversion
     assert fspkg_folder not in result.files_created, str(result.stdout)
     assert egg_folder in result.files_created, str(result)
 
-    result2 = script.pip('uninstall', 'FSPkg', '-y', expect_error=True)
+    result2 = script.pip('uninstall', 'FSPkg', '-y')
     assert_all_changes(
         result,
         result2,
@@ -307,11 +367,8 @@ def test_uninstallpathset_no_paths(caplog):
     from pip.req.req_uninstall import UninstallPathSet
     from pkg_resources import get_distribution
     test_dist = get_distribution('pip')
-    # ensure that the distribution is "local"
-    with patch("pip.req.req_uninstall.dist_is_local") as mock_dist_is_local:
-        mock_dist_is_local.return_value = True
-        uninstall_set = UninstallPathSet(test_dist)
-        uninstall_set.remove()  # with no files added to set
+    uninstall_set = UninstallPathSet(test_dist)
+    uninstall_set.remove()  # with no files added to set
 
     assert (
         "Can't uninstall 'pip'. No files were found to uninstall."
@@ -319,31 +376,25 @@ def test_uninstallpathset_no_paths(caplog):
     )
 
 
-def test_uninstallpathset_non_local(caplog):
-    """
-    Test UninstallPathSet logs notification and returns (with no exception)
-    when dist is non-local
-    """
-    nonlocal_path = os.path.abspath("/nonlocal")
-    from pip.req.req_uninstall import UninstallPathSet
-    from pkg_resources import get_distribution
-    test_dist = get_distribution('pip')
-    test_dist.location = nonlocal_path
-    # ensure that the distribution is "non-local"
-    # setting location isn't enough, due to egg-link file checking for
-    # develop-installs
-    with patch("pip.req.req_uninstall.dist_is_local") as mock_dist_is_local:
-        mock_dist_is_local.return_value = False
-        uninstall_set = UninstallPathSet(test_dist)
-        # with no files added to set; which is the case when trying to remove
-        # non-local dists
-        uninstall_set.remove()
+def test_uninstall_non_local_distutils(caplog, monkeypatch, tmpdir):
+    einfo = tmpdir.join("thing-1.0.egg-info")
+    with open(einfo, "wb"):
+        pass
 
-    assert (
-        "Not uninstalling pip at %s, outside environment %s"
-        % (nonlocal_path, sys.prefix)
-        in caplog.text()
+    dist = pretend.stub(
+        key="thing",
+        project_name="thing",
+        egg_info=einfo,
+        location=einfo,
+        _provider=pretend.stub(),
     )
+    get_dist = pretend.call_recorder(lambda x: dist)
+    monkeypatch.setattr("pip._vendor.pkg_resources.get_distribution", get_dist)
+
+    req = InstallRequirement.from_line("thing")
+    req.uninstall()
+
+    assert os.path.exists(einfo)
 
 
 def test_uninstall_wheel(script, data):
@@ -356,3 +407,24 @@ def test_uninstall_wheel(script, data):
     assert dist_info_folder in result.files_created
     result2 = script.pip('uninstall', 'simple.dist', '-y')
     assert_all_changes(result, result2, [])
+
+
+def test_uninstall_setuptools_develop_install(script, data):
+    """Try uninstall after setup.py develop followed of setup.py install"""
+    pkg_path = data.packages.join("FSPkg")
+    script.run('python', 'setup.py', 'develop',
+               expect_stderr=True, cwd=pkg_path)
+    script.run('python', 'setup.py', 'install',
+               expect_stderr=True, cwd=pkg_path)
+    list_result = script.pip('list', '--format=legacy')
+    assert "FSPkg (0.1.dev0, " in list_result.stdout
+    # Uninstall both develop and install
+    uninstall = script.pip('uninstall', 'FSPkg', '-y')
+    assert any(filename.endswith('.egg')
+               for filename in uninstall.files_deleted.keys())
+    uninstall2 = script.pip('uninstall', 'FSPkg', '-y')
+    assert join(
+        script.site_packages, 'FSPkg.egg-link'
+    ) in uninstall2.files_deleted, list(uninstall2.files_deleted.keys())
+    list_result2 = script.pip('list', '--format=legacy')
+    assert "FSPkg" not in list_result2.stdout

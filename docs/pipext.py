@@ -6,7 +6,7 @@ from docutils import nodes
 from docutils.parsers import rst
 from docutils.statemachine import ViewList
 from textwrap import dedent
-from pip import commands
+from pip.commands import commands_dict as commands
 from pip import cmdoptions
 from pip.utils import get_prog
 
@@ -78,14 +78,14 @@ class PipOptions(rst.Directive):
 class PipGeneralOptions(PipOptions):
     def process_options(self):
         self._format_options(
-            [o.make() for o in cmdoptions.general_group['options']]
+            [o() for o in cmdoptions.general_group['options']]
         )
 
 
 class PipIndexOptions(PipOptions):
     def process_options(self):
         self._format_options(
-            [o.make() for o in cmdoptions.index_group['options']]
+            [o() for o in cmdoptions.index_group['options']]
         )
 
 

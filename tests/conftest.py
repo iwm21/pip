@@ -4,6 +4,8 @@ import shutil
 import py
 import pytest
 
+from pip.utils import appdirs
+
 from tests.lib import SRC_DIR, TestData
 from tests.lib.path import Path
 from tests.lib.scripttest import PipTestEnvironment
@@ -12,16 +14,19 @@ from tests.lib.venv import VirtualEnvironment
 
 def pytest_collection_modifyitems(items):
     for item in items:
+        if not hasattr(item, 'module'):  # e.g.: DoctestTextfile
+            continue
         module_path = os.path.relpath(
             item.module.__file__,
             os.path.commonprefix([__file__, item.module.__file__]),
         )
 
-        if (module_path.startswith("functional/")
-                or module_path.startswith("integration/")
-                or module_path.startswith("lib/")):
+        module_root_dir = module_path.split(os.pathsep)[0]
+        if (module_root_dir.startswith("functional") or
+                module_root_dir.startswith("integration") or
+                module_root_dir.startswith("lib")):
             item.add_marker(pytest.mark.integration)
-        elif module_path.startswith("unit/"):
+        elif module_root_dir.startswith("unit"):
             item.add_marker(pytest.mark.unit)
 
             # We don't want to allow using the script resource if this is a
@@ -105,6 +110,9 @@ def isolate(tmpdir):
     os.environ["GIT_AUTHOR_NAME"] = "pip"
     os.environ["GIT_AUTHOR_EMAIL"] = "pypa-dev@googlegroups.com"
 
+    # We want to disable the version check from running in the tests
+    os.environ["PIP_DISABLE_PIP_VERSION_CHECK"] = "true"
+
     os.makedirs(os.path.join(home_dir, ".config", "git"))
     with open(os.path.join(home_dir, ".config", "git", "config"), "wb") as fp:
         fp.write(
@@ -113,7 +121,7 @@ def isolate(tmpdir):
 
 
 @pytest.fixture
-def virtualenv(tmpdir, monkeypatch):
+def virtualenv(tmpdir, monkeypatch, isolate):
     """
     Return a virtual environment which is unique to each test function
     invocation created inside of a sub directory of the test function's
@@ -131,7 +139,8 @@ def virtualenv(tmpdir, monkeypatch):
         SRC_DIR,
         pip_src,
         ignore=shutil.ignore_patterns(
-            "*.pyc", "tests", "pip.egg-info", "build", "dist", ".tox",
+            "*.pyc", "__pycache__", "contrib", "docs", "tasks", "*.txt",
+            "tests", "pip.egg-info", "build", "dist", ".tox", ".git",
         ),
     )
 
@@ -140,6 +149,10 @@ def virtualenv(tmpdir, monkeypatch):
         tmpdir.join("workspace", "venv"),
         pip_source_dir=pip_src,
     )
+
+    # Clean out our cache: creating the venv injects wheels into it.
+    if os.path.exists(appdirs.user_cache_dir("pip")):
+        shutil.rmtree(appdirs.user_cache_dir("pip"))
 
     # Undo our monkeypatching of shutil
     monkeypatch.undo()

@@ -1,9 +1,8 @@
 """Stuff that differs in different Python versions and platform
 distributions."""
-from __future__ import absolute_import
+from __future__ import absolute_import, division
 
 import os
-import imp
 import sys
 
 from pip._vendor.six import text_type
@@ -13,14 +12,59 @@ try:
 except ImportError:
     from pip.compat.dictconfig import dictConfig as logging_dictConfig
 
+try:
+    from collections import OrderedDict
+except ImportError:
+    from pip.compat.ordereddict import OrderedDict
+
+try:
+    import ipaddress
+except ImportError:
+    try:
+        from pip._vendor import ipaddress
+    except ImportError:
+        import ipaddr as ipaddress
+        ipaddress.ip_address = ipaddress.IPAddress
+        ipaddress.ip_network = ipaddress.IPNetwork
+
+
+try:
+    import sysconfig
+
+    def get_stdlib():
+        paths = [
+            sysconfig.get_path("stdlib"),
+            sysconfig.get_path("platstdlib"),
+        ]
+        return set(filter(bool, paths))
+except ImportError:
+    from distutils import sysconfig
+
+    def get_stdlib():
+        paths = [
+            sysconfig.get_python_lib(standard_lib=True),
+            sysconfig.get_python_lib(standard_lib=True, plat_specific=True),
+        ]
+        return set(filter(bool, paths))
+
 
 __all__ = [
-    "logging_dictConfig", "uses_pycache", "console_to_str", "native_str",
-    "get_path_uid", "stdlib_pkgs", "WINDOWS",
+    "logging_dictConfig", "ipaddress", "uses_pycache", "console_to_str",
+    "native_str", "get_path_uid", "stdlib_pkgs", "WINDOWS", "samefile",
+    "OrderedDict",
 ]
 
 
-uses_pycache = hasattr(imp, 'cache_from_source')
+if sys.version_info >= (3, 4):
+    uses_pycache = True
+    from importlib.util import cache_from_source
+else:
+    import imp
+    uses_pycache = hasattr(imp, 'cache_from_source')
+    if uses_pycache:
+        cache_from_source = imp.cache_from_source
+    else:
+        cache_from_source = None
 
 
 if sys.version_info >= (3,):
@@ -44,6 +88,14 @@ else:
         if isinstance(s, text_type):
             return s.encode('utf-8')
         return s
+
+
+def total_seconds(td):
+    if hasattr(td, "total_seconds"):
+        return td.total_seconds()
+    else:
+        val = td.microseconds + (td.seconds + td.days * 24 * 3600) * 10 ** 6
+        return val / 10 ** 6
 
 
 def get_path_uid(path):
@@ -75,16 +127,38 @@ def get_path_uid(path):
     return file_uid
 
 
+def expanduser(path):
+    """
+    Expand ~ and ~user constructions.
+
+    Includes a workaround for http://bugs.python.org/issue14768
+    """
+    expanded = os.path.expanduser(path)
+    if path.startswith('~/') and expanded.startswith('//'):
+        expanded = expanded[1:]
+    return expanded
+
+
 # packages in the stdlib that may have installation metadata, but should not be
 # considered 'installed'.  this theoretically could be determined based on
 # dist.location (py27:`sysconfig.get_paths()['stdlib']`,
 # py26:sysconfig.get_config_vars('LIBDEST')), but fear platform variation may
 # make this ineffective, so hard-coding
-stdlib_pkgs = ['python', 'wsgiref']
+stdlib_pkgs = ('python', 'wsgiref')
 if sys.version_info >= (2, 7):
-    stdlib_pkgs.extend(['argparse'])
+    stdlib_pkgs += ('argparse',)
 
 
 # windows detection, covers cpython and ironpython
-WINDOWS = (sys.platform.startswith("win")
-           or (sys.platform == 'cli' and os.name == 'nt'))
+WINDOWS = (sys.platform.startswith("win") or
+           (sys.platform == 'cli' and os.name == 'nt'))
+
+
+def samefile(file1, file2):
+    """Provide an alternative for os.path.samefile on Windows/Python2"""
+    if hasattr(os.path, 'samefile'):
+        return os.path.samefile(file1, file2)
+    else:
+        path1 = os.path.normcase(os.path.abspath(file1))
+        path2 = os.path.normcase(os.path.abspath(file2))
+        return path1 == path2

@@ -1,6 +1,7 @@
 import os
 import tempfile
 import textwrap
+import pytest
 
 
 def test_options_from_env_vars(script):
@@ -12,7 +13,7 @@ def test_options_from_env_vars(script):
     result = script.pip('install', '-vvv', 'INITools', expect_error=True)
     assert "Ignoring indexes:" in result.stdout, str(result)
     assert (
-        "DistributionNotFound: No distributions at all found for INITools"
+        "DistributionNotFound: No matching distribution found for INITools"
         in result.stdout
     )
 
@@ -22,22 +23,23 @@ def test_command_line_options_override_env_vars(script, virtualenv):
     Test that command line options override environmental variables.
 
     """
-    script.environ['PIP_INDEX_URL'] = 'http://b.pypi.python.org/simple/'
+    script.environ['PIP_INDEX_URL'] = 'https://b.pypi.python.org/simple/'
     result = script.pip('install', '-vvv', 'INITools', expect_error=True)
     assert (
-        "Getting page http://b.pypi.python.org/simple/INITools"
+        "Getting page https://b.pypi.python.org/simple/initools"
         in result.stdout
     )
     virtualenv.clear()
     result = script.pip(
-        'install', '-vvv', '--index-url', 'http://download.zope.org/ppix',
+        'install', '-vvv', '--index-url', 'https://download.zope.org/ppix',
         'INITools',
         expect_error=True,
     )
     assert "b.pypi.python.org" not in result.stdout
-    assert "Getting page http://download.zope.org/ppix" in result.stdout
+    assert "Getting page https://download.zope.org/ppix" in result.stdout
 
 
+@pytest.mark.network
 def test_env_vars_override_config_file(script, virtualenv):
     """
     Test that environmental variables override settings in config files.
@@ -66,7 +68,7 @@ def _test_env_vars_override_config_file(script, virtualenv, config_file):
         """))
     result = script.pip('install', '-vvv', 'INITools', expect_error=True)
     assert (
-        "DistributionNotFound: No distributions at all found for INITools"
+        "DistributionNotFound: No matching distribution found for INITools"
         in result.stdout
     )
     script.environ['PIP_NO_INDEX'] = '0'
@@ -75,6 +77,7 @@ def _test_env_vars_override_config_file(script, virtualenv, config_file):
     assert "Successfully installed INITools" in result.stdout
 
 
+@pytest.mark.network
 def test_command_line_append_flags(script, virtualenv, data):
     """
     Test command line flags that append to defaults set by environmental
@@ -82,7 +85,11 @@ def test_command_line_append_flags(script, virtualenv, data):
 
     """
     script.environ['PIP_FIND_LINKS'] = 'http://pypi.pinaxproject.com'
-    result = script.pip('install', '-vvv', 'INITools', expect_error=True)
+    result = script.pip(
+        'install', '-vvv', 'INITools', '--trusted-host',
+        'pypi.pinaxproject.com',
+        expect_error=True,
+    )
     assert (
         "Analyzing links from page http://pypi.pinaxproject.com"
         in result.stdout
@@ -90,6 +97,7 @@ def test_command_line_append_flags(script, virtualenv, data):
     virtualenv.clear()
     result = script.pip(
         'install', '-vvv', '--find-links', data.find_links, 'INITools',
+        '--trusted-host', 'pypi.pinaxproject.com',
         expect_error=True,
     )
     assert (
@@ -99,6 +107,7 @@ def test_command_line_append_flags(script, virtualenv, data):
     assert "Skipping link %s" % data.find_links in result.stdout
 
 
+@pytest.mark.network
 def test_command_line_appends_correctly(script, data):
     """
     Test multiple appending options set by environmental variables.
@@ -107,7 +116,11 @@ def test_command_line_appends_correctly(script, data):
     script.environ['PIP_FIND_LINKS'] = (
         'http://pypi.pinaxproject.com %s' % data.find_links
     )
-    result = script.pip('install', '-vvv', 'INITools', expect_error=True)
+    result = script.pip(
+        'install', '-vvv', 'INITools', '--trusted-host',
+        'pypi.pinaxproject.com',
+        expect_error=True,
+    )
 
     assert (
         "Analyzing links from page http://pypi.pinaxproject.com"
@@ -137,23 +150,23 @@ def _test_config_file_override_stack(script, virtualenv, config_file):
     script.environ['PIP_CONFIG_FILE'] = config_file
     (script.scratch_path / config_file).write(textwrap.dedent("""\
         [global]
-        index-url = http://download.zope.org/ppix
+        index-url = https://download.zope.org/ppix
         """))
     result = script.pip('install', '-vvv', 'INITools', expect_error=True)
     assert (
-        "Getting page http://download.zope.org/ppix/INITools" in result.stdout
+        "Getting page https://download.zope.org/ppix/initools" in result.stdout
     )
     virtualenv.clear()
     (script.scratch_path / config_file).write(textwrap.dedent("""\
         [global]
-        index-url = http://download.zope.org/ppix
+        index-url = https://download.zope.org/ppix
         [install]
         index-url = https://pypi.gocept.com/
         """))
     result = script.pip('install', '-vvv', 'INITools', expect_error=True)
-    assert "Getting page https://pypi.gocept.com/INITools" in result.stdout
+    assert "Getting page https://pypi.gocept.com/initools" in result.stdout
     result = script.pip(
-        'install', '-vvv', '--index-url', 'http://pypi.python.org/simple',
+        'install', '-vvv', '--index-url', 'https://pypi.python.org/simple',
         'INITools',
         expect_error=True,
     )
@@ -163,7 +176,7 @@ def _test_config_file_override_stack(script, virtualenv, config_file):
     )
     assert "Getting page https://pypi.gocept.com/INITools" not in result.stdout
     assert (
-        "Getting page http://pypi.python.org/simple/INITools" in result.stdout
+        "Getting page https://pypi.python.org/simple/initools" in result.stdout
     )
 
 
@@ -180,6 +193,25 @@ def test_options_from_venv_config(script, virtualenv):
     result = script.pip('install', '-vvv', 'INITools', expect_error=True)
     assert "Ignoring indexes:" in result.stdout, str(result)
     assert (
-        "DistributionNotFound: No distributions at all found for INITools"
+        "DistributionNotFound: No matching distribution found for INITools"
         in result.stdout
     )
+
+
+def test_install_no_binary_via_config_disables_cached_wheels(script, data):
+    script.pip('install', 'wheel')
+    config_file = tempfile.NamedTemporaryFile(mode='wt')
+    script.environ['PIP_CONFIG_FILE'] = config_file.name
+    config_file.write(textwrap.dedent("""\
+        [global]
+        no-binary = :all:
+        """))
+    config_file.flush()
+    res = script.pip(
+        'install', '--no-index', '-f', data.find_links,
+        'upper', expect_stderr=True)
+    assert "Successfully installed upper-2.0" in str(res), str(res)
+    # No wheel building for upper, which was blacklisted
+    assert "Running setup.py bdist_wheel for upper" not in str(res), str(res)
+    # Must have used source, not a cached wheel to install upper.
+    assert "Running setup.py install for upper" in str(res), str(res)

@@ -35,10 +35,13 @@ class CacheControlAdapter(HTTPAdapter):
         if request.method == 'GET':
             cached_response = self.controller.cached_request(request)
             if cached_response:
-                return self.build_response(request, cached_response, from_cache=True)
+                return self.build_response(request, cached_response,
+                                           from_cache=True)
 
             # check for etags and add headers if appropriate
-            request.headers.update(self.controller.conditional_headers(request))
+            request.headers.update(
+                self.controller.conditional_headers(request)
+            )
 
         resp = super(CacheControlAdapter, self).send(request, **kw)
 
@@ -53,7 +56,7 @@ class CacheControlAdapter(HTTPAdapter):
         """
         if not from_cache and request.method == 'GET':
 
-            # apply any expiration heurstics
+            # apply any expiration heuristics
             if response.status == 304:
                 # We must have sent an ETag request. This could mean
                 # that we've been expired already or that we simply
@@ -74,6 +77,10 @@ class CacheControlAdapter(HTTPAdapter):
                 response.release_conn()
 
                 response = cached_response
+
+            # We always cache the 301 responses
+            elif response.status == 301:
+                self.controller.cache_response(request, response)
             else:
                 # Check for any heuristics that might update headers
                 # before trying to cache.
@@ -104,3 +111,7 @@ class CacheControlAdapter(HTTPAdapter):
         resp.from_cache = from_cache
 
         return resp
+
+    def close(self):
+        self.cache.close()
+        super(CacheControlAdapter, self).close()
