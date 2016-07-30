@@ -7,8 +7,8 @@ Do I need to install pip?
 -------------------------
 
 pip is already installed if you're using Python 2 >=2.7.9 or Python 3 >=3.4
-downloaded from `python.org <https://www.python.org>`_, but you'll need to
-:ref:`upgrade pip <Upgrading pip>`.
+binaries downloaded from `python.org <https://www.python.org>`_, but you'll
+need to :ref:`upgrade pip <Upgrading pip>`.
 
 Additionally, pip will already be installed if you're working in a :ref:`Virtual
 Environment <pypug:Creating and using Virtual Environments>` created by
@@ -42,6 +42,12 @@ if they're not already. :ref:`pypug:setuptools` is required to install
 required to be able to build a :ref:`Wheel cache` (which improves installation
 speed), although neither are required to install pre-built :term:`wheels
 <pypug:Wheel>`.
+
+.. note::
+
+   The get-pip.py script is supported on the same python version as pip.
+   For the now unsupported Python 3.2, an alternate script is available
+   `here <https://bootstrap.pypa.io/3.2/get-pip.py>`_.
 
 
 get-pip.py options

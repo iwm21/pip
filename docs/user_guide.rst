@@ -101,7 +101,7 @@ In practice, there are 4 common uses of Requirements files:
 
 It's important to be clear that pip determines package dependencies using
 `install_requires metadata
-<http://pythonhosted.org/setuptools/setuptools.html#declaring-dependencies>`_,
+<https://setuptools.readthedocs.io/en/latest/setuptools.html#declaring-dependencies>`_,
 not by discovering `requirements.txt` files embedded in projects.
 
 See also:
@@ -153,7 +153,7 @@ Installing from Wheels
 
 "Wheel" is a built, archive format that can greatly speed installation compared
 to building and installing from source archives. For more information, see the
-`Wheel docs <http://wheel.readthedocs.org>`_ ,
+`Wheel docs <https://wheel.readthedocs.io>`_ ,
 `PEP427 <http://www.python.org/dev/peps/pep-0427>`_, and
 `PEP425 <http://www.python.org/dev/peps/pep-0425>`_
 
